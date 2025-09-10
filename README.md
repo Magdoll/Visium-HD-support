@@ -1,4 +1,7 @@
 # Visium-HD-support
+
+Last updated: 09/10/2025
+
 This document describes how to analyze Visium HD-Kinnex data generated on PacBio long-read sequencers.
 From Kinnex sequencing runs, you should use `segmented.bam` (output from SMRT Link Read Segmentation utility (see the [Read Segmentation report section in the single-cell Iso-Seq SMRT Link troubleshooting guide](https://www.pacb.com/wp-content/uploads/SMRT-Link-Kinnex-single-cell-troubleshooting-guide-v13.1.pdf)) or from [skera](https://skera.how/)( via command line) to go into the following steps. 
 
