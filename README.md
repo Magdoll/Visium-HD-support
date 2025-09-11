@@ -61,6 +61,12 @@ $ samtools sort -t CB <sample>.retagged.bam -o <sample>.corrected.sorted.bam
 $ isoseq groupdedup <sample>.corrected.sorted.bam dedup.bam 
 ```
 
+If you have multiple BAM files, you will need to merge the BAM files and do `samtools sort` on the merged BAM before running `isoseq groupdedup`. To make `isoseq groupdedup` run faster, you can use the following options:
+
+```
+$ isoseq groupdedup --max-tag-shift 0 --max-tag-mismatches 0 --barcode-tag CB --no-poa --max-length-difference 10 --min-concordance-perc 99 --batch-size 10000000 <sample or merged>.corrected.sorted.bam dedup.bam
+```
+
 Once the reads are deduplicated, we can proceed with alignment to get the isoform GFF files, followed by pigeon isoform classification, and finally count matrix. You can download the relevant hg38 genome and Gencode annotation [here](https://downloads.pacbcloud.com/public/dataset/Kinnex-single-cell-RNA/REF-pigeon_ref_sets/Human_hg38_Gencode_v39/) (if you already have access to SMRT Link, they would also already exist in your SMRT Link bundle).
 
 ```
