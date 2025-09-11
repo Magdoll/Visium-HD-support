@@ -4,7 +4,10 @@ import gzip
 from csv import DictReader
 from argparse import ArgumentParser
 
-def read_info(spatial_csv_gz, s_bam_file):
+MAX_CB_LENGTH = 33
+MAX_UMI_LENGTH = 9
+
+def read_info(spatial_csv_gz, s_bam_file=None, spatial_barcode_map_file=None):
     """
     Read the spatial barcodes CSV from SpaceRanger output with format:
     
@@ -13,11 +16,17 @@ def read_info(spatial_csv_gz, s_bam_file):
     m84039_250124_023230_s2/187635340/ccs/2043_2623,GCAGCTATGCAGGTAGTATCCACGGCATCG,s_002um_00964_02405-1,CAATGCATA,CAATGCATA
 
     Also read the segmented.bam to get the `di` tag to trace S-reads
+    If s_bam_file is None, it is a non-Kinnex BAM file, track it with just zmw
 
     :returns: spatial_dict, spatial_barcode_map, sread_dict
     """
     spatial_dict = {} # S read name --> CSV dict
     spatial_barcode_map = {} # corrected barcode (not ATCG) --> ATCG-based sequence to use for CB, XC
+
+    if spatial_barcode_map_file is not None: # might be processing multiple BAM files, so re-use the prev one
+        # CB_tag,spatial_barcode
+        for r in DictReader(open(spatial_barcode_map_file), delimiter=','):
+            spatial_barcode_map[r['spatial_barcode']] = r['CB_tag']
 
     # read ahead once to make sure things look right
     rex = re.compile('\S+\/\d+\/ccs\/\d+_\d+')
@@ -48,26 +57,36 @@ def read_info(spatial_csv_gz, s_bam_file):
                                         'corrected_barcode': r['corrected_barcode'],
                                         'uncorrected_barcode': r['uncorrected_barcode']}
         if bc not in spatial_barcode_map:
-            spatial_barcode_map[bc] = r['uncorrected_barcode'] # we basically use uncorrected bc as a hack for BC/XC
+            # we need to pad any corrected barcode up to 33bp
+            new_cb = r['uncorrected_barcode']
+            assert len(new_cb) <= MAX_CB_LENGTH
+            new_cb += 'A'*(MAX_CB_LENGTH - len(new_cb))
+            spatial_barcode_map[bc] = new_cb # we basically use uncorrected bc as a hack for BC/XC
     print("finished reading {0} reads barcode info".format(len(spatial_dict)))
 
     # read the tagged BAM file to track S-reads by (ZMW, di)
     # where di is the tag that tells you the S-read sub-segment it came from
     # we need this cuz S read names change over time with lima/isoseq refine trimming sequences
-    sread_dict = {} # (ZMW,di) --> link to spatial dict
-    reader = pysam.AlignmentFile(open(s_bam_file),'rb',check_sq=False)
-    for r in reader:
-        x = r.qname.split('/')
-        zmw = x[0] + '/' + x[1]
-        if r.qname not in spatial_dict:
-            #print("{0} not in tagged csv, ignore.".format(r.qname))
-            continue
-        sread_dict[(zmw,dict(r.tags)['di'])] = spatial_dict[r.qname]
+    sread_dict = {} # (ZMW,di) or (ZMW) --> link to spatial dict
+    if s_bam_file is not None:
+        reader = pysam.AlignmentFile(open(s_bam_file),'rb',check_sq=False)
+        for r in reader:
+            x = r.qname.split('/')
+            zmw = x[0] + '/' + x[1]
+            if r.qname not in spatial_dict:
+                #print("{0} not in tagged csv, ignore.".format(r.qname))
+                continue
+            sread_dict[(zmw,dict(r.tags)['di'])] = spatial_dict[r.qname]
+    else:
+        for k,v in spatial_dict.items():
+            x = k.split('/')
+            zmw = x[0] + '/' + x[1]
+            sread_dict[zmw] = v
     print("finished reading s read info")
     return spatial_dict, spatial_barcode_map, sread_dict
 
 
-def write_tagged_BAM(in_bam, out_prefix, spatial_dict, spatial_barcode_map, sread_dict):
+def write_tagged_BAM(in_bam, out_prefix, spatial_dict, spatial_barcode_map, sread_dict, is_kinnex):
     """
     Write out a new tagged fltnc with the XM/BC added in
     Input should be fltnc.bam with strand-oriented, cDNA/polyA/UMI-BC trimmed
@@ -79,7 +98,10 @@ def write_tagged_BAM(in_bam, out_prefix, spatial_dict, spatial_barcode_map, srea
     for r in reader:
         x = r.qname.split('/')
         tagdict = dict(r.tags)
-        _key = x[0]+'/'+x[1], tagdict['di']
+        if is_kinnex:
+            _key = x[0]+'/'+x[1], tagdict['di']
+        else:
+            _key = x[0]+'/'+x[1]
         if _key not in sread_dict: 
             print("skipping {0}...".format(_key))
             continue
@@ -88,8 +110,14 @@ def write_tagged_BAM(in_bam, out_prefix, spatial_dict, spatial_barcode_map, srea
         new_tags = []
         for tagstr in r.tostring().split('\t')[11:]:
             if tagstr.split(':')[0] not in ['rc','gp','nb','XM','XC','CB','XA']:  new_tags += [tagstr]
+     
         rec = sread_dict[_key]
-        new_tags += ['XM:Z:'+rec['corrected_umi'],
+        # we need to pad corrected UMI to fixed length
+        # (the CB was already padded in spatial_barcode_map)
+        new_umi = rec['corrected_umi']
+        assert len(new_umi) <= MAX_UMI_LENGTH
+        new_umi += 'A'*(MAX_UMI_LENGTH - len(new_umi))
+        new_tags += ['XM:Z:'+new_umi,
                      'CB:Z:'+spatial_barcode_map[rec['corrected_barcode']],
                      'XC:Z:'+rec['uncorrected_barcode'], 
                      'rc:i:1',
@@ -99,9 +127,9 @@ def write_tagged_BAM(in_bam, out_prefix, spatial_dict, spatial_barcode_map, srea
         newd['tags'] = new_tags
         x = pysam.AlignedSegment.from_dict(newd, r.header)
         fout.write(x)
-        #if i > 1000000:
-        #    print("HACK BREAK, DELETE THIS LATER")
-        #    break
+#        if i > 1000000:
+#            print("HACK BREAK, DELETE THIS LATER")
+#            break
     fout.close()
     
     f = open(out_prefix+'.retagged.mapping.csv', 'w')
@@ -112,12 +140,12 @@ def write_tagged_BAM(in_bam, out_prefix, spatial_dict, spatial_barcode_map, srea
 
 if __name__ == "__main__":
     parser = ArgumentParser("Retagging BAM file using SpaceRanger barcode information")
-    parser.add_argument('-c', '--barcode_csv', help="SpaceRanger barcode CSV file, gzipped")
-    parser.add_argument('-s', '--segmented', help="Segmented BAM file")
-    parser.add_argument('-i', '--input', help="Input FLTNC BAM file")
-    parser.add_argument('-o', '--output_prefix', help="Output prefix")
-    
+    parser.add_argument('-c', '--barcode_csv', required=True, help="SpaceRanger barcode CSV file, gzipped")
+    parser.add_argument('-i', '--input', required=True, help="Input FLTNC BAM file")
+    parser.add_argument('-o', '--output_prefix', required=True, help="Output prefix")
+    parser.add_argument('-s', '--segmented', default=None, help="Segmented BAM file (OPTIONAL: required for Kinnex BAM files)")
+    parser.add_argument("-m", "--retagged_csv", default=None, help="Existing retagged CSV file (OPTIONAL: required for processing multiple files)")
     args = parser.parse_args()
     
-    spatial_dict, spatial_barcode_map, sread_dict = read_info(args.barcode_csv, args.segmented)
-    write_tagged_BAM(args.input, args.output_prefix, spatial_dict, spatial_barcode_map, sread_dict)
+    spatial_dict, spatial_barcode_map, sread_dict = read_info(args.barcode_csv, args.segmented, args.retagged_csv)
+    write_tagged_BAM(args.input, args.output_prefix, spatial_dict, spatial_barcode_map, sread_dict, is_kinnex=args.segmented is not None)
