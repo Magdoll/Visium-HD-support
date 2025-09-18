@@ -1,6 +1,6 @@
 # Visium-HD-support
 
-Last updated: 09/10/2025
+Last updated: 09/18/2025
 
 This document describes how to analyze Visium HD-Kinnex data generated on PacBio long-read sequencers.
 

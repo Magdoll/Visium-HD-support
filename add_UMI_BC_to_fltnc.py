@@ -33,7 +33,7 @@ def read_info(spatial_csv_gz, s_bam_file=None, spatial_barcode_map_file=None):
     with gzip.open(spatial_csv_gz, mode='rt') as h:
         reader = DictReader(h,delimiter=',')
         r = next(reader)
-        if not rex.fullmatch(r['read_name']):
+        if s_bam_file is not None and not rex.fullmatch(r['read_name']):
             print("Read name in {0} does not have the expected S-read format. Abort!".format(spatial_csv_gz))
             sys.exit(-1)
         if 'corrected_barcode' not in reader.fieldnames:
